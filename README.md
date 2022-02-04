@@ -1,444 +1,149 @@
 # k8s-cluster
 
-Deployment instructions for creating a kubernetes cluster
+Deployment instructions for creating a Kubernetes cluster using Kubic
 
 ## Architecture
 
-- 2 masters and 1 worker
-- Both masters are Rocky Linux LXC containers on my Proxmox machine ([fitlet2](https://fit-iot.com/web/products/fitlet2/) with Intel Atom E3950)
-- First master:
-  - IP: 10.1.20.11
-  - Hostname: k8m01
-- Second master:
-  - IP: 10.1.20.12
-  - Hostname: k8m02
-- The worker is an [HP S01-pf1013w](https://forums.serverbuilds.net/t/official-hp-s01-pf1013w-owners-thread-and-review/9070) running Rocky Linux
-  - IP: 10.1.20.21
-  - Hostname: k8w01
+This will expand as I make the cluster bigger and better:
 
-## Prepare Bastion Host
+- The entire cluster will be just **one** node right now
+- IP: 10.1.20.81
+- Hostname: k01
+- OS: openSUSE Kubic
 
-Presumably, you're going to run your `kubectl` commands from a machine not in the cluster. That's your bastion host. In my case, it's an openSUSE Tumbleweed machine using the Alacritty terminal.
+I previously built a cluster with three nodes where two of the nodes were LXC containers and one node was a physical host with Rocky Linux 8 [here](https://github.com/willquill/kube-plex).
 
-### Install your terminfo (optional)
+Note: Since I'll probably have more nodes in the future and don't want to rewrite this README, I'll use terms like "all of the nodes" when, obviously, there is only one node right now.
 
-Since I'll be doing SSH things on my Proxmox server and on all Kubernetes nodes, I'll need to install the Alacritty terminfo on all machines.
+## Install Kubic
 
-We'll start with running this on my Proxmox server:
+Nothing much to say here. I downloaded the Kubic ISO and installed it onto the destination machines.
 
-`apt-get update && apt-get install git`
+## Create Kubernetes Cluster
 
-`git clone https://github.com/alacritty/alacritty.git`
+If you did not install Docker and want to use CRI-O, then do:
 
-`cd alacritty`
+`kubeadm init --pod-network-cidr=10.244.0.0/16`
 
-`tic -xe alacritty,alacritty-direct extra/alacritty.info`
+If you installed Docker but want to use CRI-O, then do:
 
-### Prepare SSH Keys and Config
+`kubeadm init --pod-network-cidr=10.244.0.0/16 --cri-socket=/var/run/crio/crio.sock`
 
-Before doing anything, you'll want to prepare your SSH keys
+^ *This is the method I used because I installed Docker on the host for other purposes.*
 
-I didn't want to use the default key names of `id_rsa` and `id_rsa.pub` so I ran the following command:
+If you installed Docker and want to use dockershim, then do:
 
-`ssh-keygen -t rsa -b 4096 -N '' -f ~/.ssh/k8s_rsa`
+`kubeadm init --pod-network-cidr=10.244.0.0/16 --cri-socket=/var/run/dockershim.sock`
 
-Since every one of my kubernetes nodes will have a hostname that starts with `k8`, I'm making the SSH config apply to only the `k8*` hosts.
-
-Notice that I use `cat` to append because I don't need root privileges.
+If it's successful, you'll see something like this:
 
 ```sh
-cat >> ~/.ssh/config<< EOF
-Host k8*
-    UserKnownHostsFile /dev/null
-    StrictHostKeyChecking no
-    IdentitiesOnly yes
-    ConnectTimeout 0
-    ServerAliveInterval 30
-    IdentityFile ~/.ssh/k8s_rsa
-EOF
+Your Kubernetes control-plane has initialized successfully!
+
+To start using your cluster, you need to run the following as a regular user:
+
+  mkdir -p $HOME/.kube
+  sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+  sudo chown $(id -u):$(id -g) $HOME/.kube/config
+
+Alternatively, if you are the root user, you can run:
+
+  export KUBECONFIG=/etc/kubernetes/admin.conf
+
+You should now deploy a pod network to the cluster.
+Run "kubectl apply -f [podnetwork].yaml" with one of the options listed at:
+  https://kubernetes.io/docs/concepts/cluster-administration/addons/
+
+Then you can join any number of worker nodes by running the following on each as root:
+
+kubeadm join 10.1.20.81:6443 --token 8lxrg1.t3ly4eoijwejfcfu \
+	--discovery-token-ca-cert-hash sha256:cf6fe4e63b971ff8869233c8265e432fb2319eef3c87ec64006c73e21a0962b6
 ```
 
-Finally, copy the public key to your Proxmox host (10.1.20.10 in my case) so you can use it in the next session.
+## Setup Bastion Host
 
-`scp ~/.ssh/k8s_rsa.pub root@10.1.20.10:/root/.ssh/k8s_rsa.pub`
+Presumably, you don't want to run your `kubectl` commands on the server all the time.
 
-You didn't actually set up this key to be used for SSH authentication to the Proxmox host itself. You are simply making the public key available on the host so that it may be used in containers.
+From your bastion host, install `kubectl` and then do the following with your own node IP to allow your local `kubectl` client to controller the cluster you just created:
 
-If you want to also use this key for authentication into your Proxmox host, use the following command (in addition to the command above):
+`mkdir -p $HOME/.kube`
 
-`ssh-copy-id -i ~/.ssh/k8s_rsa.pub root@10.1.20.10`
+`scp root@10.1.20.81:/etc/kubernetes/admin.conf $HOME/.kube/config`
 
-### Prepare hosts file
+`chown $(id -u):$(id -g) $HOME/.kube/config`
 
-My four hosts:
+## Setup Network Plugin
 
-Host Purpose  |     IP     |       FQDN      | hostname
---------------|------------|-----------------|---------
-Bastion       | 10.1.20.40 | lizard.paw.blue | lizard
-K8s Master 01 | 10.1.20.11 | k8m01.paw.blue  | k8m01
-K8s Master 02 | 10.1.20.12 | k8m02.paw.blue  | k8m02
-K8s Worker 01 | 10.1.20.21 | k8w01.paw.blue  | k8w01
+Weave is the recommended CNI, so install it with this:
 
-So I want to update the /etc/hosts file on my bastion machine like this:
+`kubectl apply -f /usr/share/k8s-yaml/weave/weave.yaml`
 
-```sh
-sudo tee -a /etc/hosts > /dev/null <<EOT
-10.1.20.40 lizard.paw.blue lizard
-10.1.20.11 k8m01.paw.blue k8m01
-10.1.20.12 k8m02.paw.blue k8m02
-10.1.20.21 k8w01.paw.blue k8w01
-EOT
+Note: openSUSE used to recommend Flannel as the CNI, but now they recommend Weave. If you accidentally installed Flannel at any point, you can undo with the following:
+
+`kubectl delete -f /usr/share/k8s-yaml/flannel/kube-flannel.yaml`
+
+## Installing Packages in Kubic
+
+A note about `transactional-update`:
+
+- You can install a package like docker with `transactional-update pkg install docker`, but the changes will not take place until you reboot.
+
+## Install Rancher (optional)
+
+Personally, Rancher is not working at all for me. The output of `docker logs rancher 2>&1` shows `[FATAL] k3s exited with: exit status 1` at the end of the log. There are many GitHub issues about this with no fix, so I'm forgetting about Rancher for now. But I already wrote all these instructions below, so maybe they'll work for you.
+
+For now, just skip to the next section, [Create Kubernetes Cluster](#create-kubernetes-cluster).
+
+### Simple Rancher Install
+
+Follow the [Installing Packages](#installing-packages) section to install docker (remember to reboot) and then run:
+
+`docker run -d --name=rancher --restart=unless-stopped -p 80:80 -p 443:443 --privileged rancher/rancher`
+
+### SSL Rancher Install
+
+Or do it the fancy way if you want trusted certificates. In my case, I have a private CA on my OPNsense box, so I created a server certificate in OPNsense named `rancher.paw.blue` and downloaded the server cert, server key, and the full chain as `rancher.paw.blue.crt`, `rancher.paw.blue.key`, and `rancher.paw.blue.p12`, respectively.
+
+Then on my local machine, I converted the three files as follows:
+
+`mv rancher.paw.blue.crt ranchercert.pem` (only needs an extension change)
+
+`openssl rsa -in rancher.paw.blue.key -text > rancherkey.pem`
+
+`openssl pkcs12 -clcerts -in rancher.paw.blue.p12 -out ranchercacerts.pem -nokeys`
+
+You are left with `ranchercert.pem`, `rancherkey.pem`, and `ranchercacerts.pem`
+
+Then I copied them all to the Kubic node using `zsh` shell as follows:
+
+`\scp rancher*.pem root@10.1.20.81:/root`
+
+Verify on my Kubic node:
+
+```text
+k01:~ # ls -l *.pem
+-rw------- 1 root root  2769 Feb  4 03:21 ranchercacerts.pem
+-rw-r--r-- 1 root root  2427 Feb  4 03:21 ranchercert.pem
+-rw-r--r-- 1 root root 11107 Feb  4 03:21 rancherkey.pem
 ```
 
-Notice that I use `tee` to append because I need root privileges.
+Then run this to install Rancher via Docker:
 
-## Master Node Initial Setup (LXC)
-
-Sources:
-
-- [Prepare Proxmox host](https://du.nkel.dev/blog/2021-03-25_proxmox_docker/)
-- [Provision LXC container]([this](https://gist.github.com/tinoji/7e066d61a84d98374b08d2414d9524f2))
-- [More LXC provisioning](https://medium.com/geekculture/a-step-by-step-demo-on-kubernetes-cluster-creation-f183823c0411)
-- [Install cluster](https://computingforgeeks.com/install-kubernetes-cluster-on-rocky-linux-with-kubeadm-crio/)
-
-> On Proxmox, the overlay and aufs Kernel modules must be enabled to support Docker-LXC-Nesting.
-
-`echo -e "overlay\naufs" >> /etc/modules-load.d/modules.conf`
-
-> Reboot Proxmox and verify that the modules are active:
-
-`lsmod | grep -E 'overlay|aufs'`
-
-Also in Proxmox, prepare root password variable for master node
-
-`echo -n Password: && read -s password && echo`
-
-The above command will prompt you for a password. Enter it and hit return.
-
-### Semi Automatic deployment
-
-You can automatically deploy the two nodes with separate commands as shown below, or you can skip to the next section where it's done fully automatically.
-
-In Proxmox, use `pct` command to create the master node.
-
-```sh
-pct create 102 /var/lib/vz/template/cache/rockylinux-8-default_20210929_amd64.tar.xz \
-    --arch amd64 \
-    --ostype centos \
-    --hostname k8m01 \
-    --cores 4 \
-    --memory 4096 \
-    --swap 0 \
-    --storage local-lvm \
-    --password $password \
-    --ssh-public-keys /root/.ssh/k8s_rsa.pub \
-    --net0 name=eth0,bridge=vmbr0,firewall=0,gw=10.1.20.1,ip=10.1.20.11/24,type=veth \
-    --unprivileged 1 \
-    --onboot 1 \
-    --features nesting=1,keyctl=1
+```docker
+docker run -d --name=rancher --restart=unless-stopped \
+  -p 80:80 -p 443:443 \
+  -v /root/ranchercert.pem:/etc/rancher/ssl/cert.pem \
+  -v /root/rancherkey.pem:/etc/rancher/ssl/key.pem \
+  -v /root/ranchercacerts.pem:/etc/rancher/ssl/cacerts.pem \
+  --privileged \
+  rancher/rancher:latest
 ```
 
-Now use the following command to start the new container, wait for 10 seconds, increase the default size of 4G to 12G by adding 8G, enter the container, and bootstrap it.
+## License
 
-```sh
-pct start 102 &&\
-sleep 10 &&\
-pct resize 102 rootfs +8G &&\
-pct exec 102 -- bash -c\
-    "sudo dnf -y update &&\
-    dnf -y install vim git wget epel-release openssh-server &&\
-    systemctl start sshd &&\
-    systemctl enable sshd"
-```
+Distributed under the MIT License. See LICENSE for more information.
 
-Optional step if you use Alacritty on your bastion host:
+## Credit
 
-```sh
-pct exec 102 -- bash -c\
-    "git clone https://github.com/alacritty/alacritty.git &&\
-    cd alacritty &&\
-    tic -xe alacritty,alacritty-direct extra/alacritty.info"
-```
-
-You would then need to run these commands again for the second node.
-
-### Fully Automatic Deployment
-
-Alternatively, you can create both nodes with a single bash script.
-
-This will create two nodes as follows:
-
-- id 102, k8m01, 10.1.20.11
-- id 103, k8m02, 10.1.20.12
-
-```sh
-for ((n=102,host=1;n<=103;n++,host++))
-do
-  pct create $n /var/lib/vz/template/cache/rockylinux-8-default_20210929_amd64.tar.xz \
-    --arch amd64 \
-    --ostype centos \
-    --hostname k8m0$host \
-    --cores 4 \
-    --memory 4096 \
-    --swap 0 \
-    --storage local-lvm \
-    --password $password \
-    --ssh-public-keys /root/.ssh/k8s_rsa.pub \
-    --net0 name=eth0,bridge=vmbr0,firewall=0,gw=10.1.20.1,ip=10.1.20.1$host/24,type=veth \
-    --unprivileged 1 \
-    --onboot 1 \
-    --features nesting=1,keyctl=1 &&\
-    pct start $n &&\
-    sleep 10 &&\
-    pct resize $n rootfs +8G &&\
-    pct exec $n -- bash -c\
-        "sudo dnf -y update &&\
-        dnf -y install vim git wget epel-release openssh-server &&\
-        systemctl start sshd &&\
-        systemctl enable sshd &&\
-        git clone https://github.com/alacritty/alacritty.git &&\
-        cd alacritty &&\
-        tic -xe alacritty,alacritty-direct extra/alacritty.info"
-done
-```
-
-## Worker Node Initial Setup (Physical)
-
-This is trickier because you will need to manually enter these commands until you have network access.
-
-### Network Setup
-
-In order to get the ethernet adapter's name, enter `ip a` on the host.
-
-You need to edit the config for that adapter so that it starts on boot.
-
-My network adapter is called `enp2s0` so I used the `sed` command to change `ONBOOT` from 'no' to 'yes' in `/etc/sysconfig/network-scripts/ifcfg-enp2s0`
-
-`sed -i 's/ONBOOT=no/ONBOOT=yes/g' /etc/sysconfig/network-scripts/ifcfg-enp2s0`
-
-I also had to do this so it would always start the NIC.
-
-`nmcli connection modify enp2s0 ipv4.method auto`
-
-`nmcli connection down enp2s0; sudo nmcli connection up enp2s0`
-
-### Get SSH Access
-
-`dnf -y update`
-
-`dnf -y install openssh-server`
-
-`systemctl start sshd`
-
-`systemctl enable sshd`
-
-### Set Hostname
-
-`hostnamectl set-hostname k8w01`
-
-### Install Basic Utilities
-
-At this point, you should be able to SSH into the host and run this command
-
-`dnf -y install vim git wget epel-release`
-
-### Alacritty terminfo (optional)
-
-If you use Alacritty on your bastion host, run this on your worker node:
-
-```sh
-git clone https://github.com/alacritty/alacritty.git &&\
-    cd alacritty &&\
-    tic -xe alacritty,alacritty-direct extra/alacritty.info
-```
-
-## Bastion Host K8s Setup
-
-I used [this](https://computingforgeeks.com/install-kubernetes-cluster-on-rocky-linux-with-kubeadm-crio/) guide.
-
-I won't reiterate all the steps from that guide, but here are some of them, as there were some occasional deviations. For some of the steps, I included instructions for both openSUSE and Rocky Linux bastion hosts.
-
-### Install Python 3.9
-
-Rocky Linux only: `sudo dnf -y install python39`
-
-openSUSE only: `sudo zypper in python39`
-
-Both OSes:
-
-`sudo pip3 install setuptools-rust wheel`
-
-`sudo pip3 install --upgrade pip`
-
-### Install Ansible
-
-`sudo python3.9 -m pip install ansible`
-
-`ansible --version`
-
-You should see something like this in Rocky Linux:
-
-```sh
-ansible [core 2.12.1]
-  config file = None
-  configured module search path = ['/home/nova/.ansible/plugins/modules', '/usr/share/ansible/plugins/modules']
-  ansible python module location = /usr/local/lib/python3.9/site-packages/ansible
-  ansible collection location = /home/nova/.ansible/collections:/usr/share/ansible/collections
-  executable location = /usr/local/bin/ansible
-  python version = 3.9.6 (default, Nov  9 2021, 13:31:27) [GCC 8.5.0 20210514 (Red Hat 8.5.0-3)]
-  jinja version = 3.0.3
-  libyaml = True
-```
-
-You should see something like this in openSUSE:
-
-```sh
-ansible [core 2.12.1]
-  config file = None
-  configured module search path = ['/home/will/.ansible/plugins/modules', '/usr/share/ansible/plugins/modules']
-  ansible python module location = /usr/local/lib/python3.9/site-packages/ansible
-  ansible collection location = /home/will/.ansible/collections:/usr/share/ansible/collections
-  executable location = /usr/local/bin/ansible
-  python version = 3.9.9 (main, Nov 17 2021, 09:50:59) [GCC]
-  jinja version = 3.0.3
-  libyaml = True
-```
-
-### SSH Auth on Worker
-
-If you used the `pct create` commands above, then the master nodes already authenticate with your `k8s_rsa` key. The following command will do the same for the worker node.
-
-`ssh-copy-id -i ~/.ssh/k8s_rsa.pub root@k8w01`
-
-### Hostname Check
-
-Check hostname value on each host from Bastion
-
-`ssh root@k8m01 'hostnamectl'`
-
-`ssh root@k8m02 'hostnamectl'`
-
-`ssh root@k8w01 'hostnamectl'`
-
-## Ansible Setup
-
-For my use case, I relied heavily upon [this](https://computingforgeeks.com/install-kubernetes-cluster-on-rocky-linux-with-kubeadm-crio/) guide again, this time modifying the playbooks for my own use.
-
-I cloned the repo and then modified the files for my own Kubernetes architecture.
-
-I won't repeat all of the instructions, but you can clone the repo and modify for your own needs.
-
-Some things I ran while trying to use the playbook as-is:
-
-### Swap problems
-
-It hung on disabling swap on my LXC containers. I made sure they have swapoff and then commented out the "disable swap" task.
-
-### SELinux problems
-
-SELinux is disabled on my Proxmox host, and I don't want to enable it, so I replaced this:
-
-```yaml
-- name: Put SELinux in permissive mode
-  ansible.posix.selinux:
-    policy: targeted
-    state: "{{ selinux_state }}"
-```
-
-With this:
-
-```yaml
-- name: Check uname 
-  shell: "uname -r"
-  register: uname
-
-- name: Put SELinux in permissive mode if enforcing
-  command: sed -i 's/SELINUX=enforcing/SELINUX=permissive/g' /etc/selinux/config
-  register: selinux_config
-  when: '"pve" not in uname.stdout'
-```
-
-### Kernel module problems
-
-I ran into an issue with the `load_kernel_modules_sysctl.yml` tasks on my LXC hosts. Apparently, I needed to install the modules on the Proxmox (PVE) host first.
-
-I ran the following to install them on my Proxmox host:
-
-```sh
-for value in br_netfilter overlay ip_vs ip_vs_rr ip_vs_wrr ip_vs_sh nf_conntrack
-do
-    modprobe $value
-    lsmod | grep $value
-done
-```
-
-Explanation of script:
-
-- `modprobe $value` will load the module
-
-- `ls mod | grep $value` will find the active module
-
-In the output of my script, I didn't see br_netfilter, but according to [this post](https://forum.proxmox.com/threads/docker-support-in-proxmox.27474/post-295237) in the Proxmox forums, "br_netfilter no need to load on pve kernels."
-
-In that post, he includes this command and output:
-
-> $ grep 'BRIDGE_NETFILTER' /boot/config-$(uname -r)
-
-> CONFIG_BRIDGE_NETFILTER=y
-
-There's more discussion on modules [here](https://gist.github.com/triangletodd/02f595cd4c0dc9aac5f7763ca2264185).
-
-Now that you've loaded the modules on the Proxmox host, you do not need to load them on the container. However, because the ansible playbook wants to verify that `br_netfilter` is loaded, I've separated out the module loading into two separate tasks and made sure the LXC containers won't try to load `br_netfilter` (because they have `pve` in their output of `uname -r`).
-
-Here's what it looked like before:
-
-```yaml
-- name: Load required modules
-  community.general.modprobe:
-    name: "{{ item }}"
-    state: present
-  with_items:
-    - br_netfilter
-    - overlay
-    - ip_vs
-    - ip_vs_rr
-    - ip_vs_wrr
-    - ip_vs_sh
-    - nf_conntrack
-```
-
-And this is after:
-
-```yaml
-- name: Load required modules (all hosts)
-  community.general.modprobe:
-    name: "{{ item }}"
-    state: present
-  with_items:
-    - overlay
-    - ip_vs
-    - ip_vs_rr
-    - ip_vs_wrr
-    - ip_vs_sh
-    - nf_conntrack
-
-- name: Load required modules (non-PVE hosts)
-  community.general.modprobe:
-    name: "{{ item }}"
-    state: present
-  with_items:
-    - br_netfilter
-  when: '"pve" not in uname.stdout'
-```
-
-## Finishing the playbook
-
-Finally, after customizing the Ansible playbook for my environment, I ran the following to execute it:
-
-`ansible-playbook -i hosts k8s-prep.yml`
-
-Note: You can run this playbook multiple times. I had to do it many, many times while troubleshooting.
-
-## Bootstrap Kubernetes Control Plane
-
-I still need to write the rest of this guide!! To be completed soon.
+- [Official documentation for Kubic](https://en.opensuse.org/Kubic:kubeadm)
+- [This blog entry](https://blog.sdmoko.net/create-k8s-cluster-with-kubic.html) helped me
