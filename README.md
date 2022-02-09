@@ -11,7 +11,7 @@ This will expand as I make the cluster bigger and better:
 - Hostname: k01
 - OS: openSUSE Kubic
 
-I previously built a cluster with three nodes where two of the nodes were LXC containers and one node was a physical host with Rocky Linux 8 [here](https://github.com/willquill/kube-plex).
+I previously built a cluster with three nodes where two of the nodes were LXC containers and one node was a physical host with Rocky Linux 8 [here](https://github.com/willquill/kube-lxc).
 
 Note: Since I'll probably have more nodes in the future and don't want to rewrite this README, I'll use terms like "all of the nodes" when, obviously, there is only one node right now.
 
