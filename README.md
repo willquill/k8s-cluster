@@ -19,6 +19,48 @@ Note: Since I'll probably have more nodes in the future and don't want to rewrit
 
 Nothing much to say here. I downloaded the Kubic ISO and installed it onto the destination machines.
 
+### Give it a static IP
+
+The name of my interface is `ifcfg-enp2s0`, so I did:
+
+`vim /etc/sysconfig/network/ifcfg-enp2s0`
+
+And made it look like this:
+
+```sh
+# Default
+#BOOTPROTO='dhcp'
+#STARTMODE='auto'
+
+# New stuff
+BOOTPROTO='static'
+IPADDR='10.1.20.81'
+NETMASK='255.255.255.0'
+MTU='1500'
+NAME=''
+STARTMODE='auto'
+USERCONTROL='no'
+```
+
+I also wanted to add `10.1.20.1` as my DNS server:
+
+`vim /etc/sysconfig/network/config`
+
+Modify these two lines, which have empty string values as defaults:
+
+```env
+NETCONFIG_DNS_STATIC_SEARCHLIST="paw.blue"
+NETCONFIG_DNS_STATIC_SERVERS="10.1.20.1"
+```
+
+Add default route:
+
+`echo 'default 10.1.20.1 - -' >> /etc/sysconfig/network/routes`
+
+Modify `/etc/hosts`:
+
+`echo '10.1.20.81 k01 k01.paw.blue' >> /etc/hosts`
+
 ## Create Kubernetes Cluster
 
 If you did not install Docker and want to use CRI-O, then do:
@@ -60,6 +102,24 @@ kubeadm join 10.1.20.81:6443 --token 8lxrg1.t3ly4eoijwejfcfu \
 	--discovery-token-ca-cert-hash sha256:cf6fe4e63b971ff8869233c8265e432fb2319eef3c87ec64006c73e21a0962b6
 ```
 
+## Initial Setup
+
+Copy the `/etc/kubernetes/admin.conf` file to the home directory
+
+`cp /etc/kubernetes/admin.conf $HOME`
+
+Take ownership of the `admin.conf` file you just copied
+
+`chown $(id -u):$(id -g) $HOME/admin.conf`
+
+Export the `KUBECONFIG` variable
+
+`export KUBECONFIG=$HOME/admin.conf`
+
+Make the `KUBECONFIG` variable always exported
+
+`echo 'export KUBECONFIG=$HOME/admin.conf' >> $HOME/.bashrc`
+
 ## Setup Bastion Host
 
 Presumably, you don't want to run your `kubectl` commands on the server all the time.
@@ -81,6 +141,12 @@ Weave is the recommended CNI, so install it with this:
 Note: openSUSE used to recommend Flannel as the CNI, but now they recommend Weave. If you accidentally installed Flannel at any point, you can undo with the following:
 
 `kubectl delete -f /usr/share/k8s-yaml/flannel/kube-flannel.yaml`
+
+## Single Node Cluster (optional)
+
+If you want the new master to be able to schedule pods (be a worker as well), then run this to untaint the master:
+
+`kubectl taint nodes --all node-role.kubernetes.io/master-`
 
 ## Installing Packages in Kubic
 
@@ -105,6 +171,8 @@ Follow the [Installing Packages](#installing-packages) section to install docker
 Or do it the fancy way if you want trusted certificates. In my case, I have a private CA on my OPNsense box, so I created a server certificate in OPNsense named `rancher.paw.blue` and downloaded the server cert, server key, and the full chain as `rancher.paw.blue.crt`, `rancher.paw.blue.key`, and `rancher.paw.blue.p12`, respectively.
 
 Then on my local machine, I converted the three files as follows:
+
+*Note: I am not totally sure if these commands result in certificates that work*
 
 `mv rancher.paw.blue.crt ranchercert.pem` (only needs an extension change)
 
