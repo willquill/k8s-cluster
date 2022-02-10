@@ -185,11 +185,11 @@ Remember to do this first if you didn't do it earlier:
 
 Do a dry run and then look at your `dryrun.txt` file.
 
-`ssh root@k01 'kubeadm init --dry-run --cri-socket=/var/run/crio/crio.sock --control-plane-endpoint=k8ep.paw.blue --pod-network-cidr=10.244.0.0/16 --kubernetes-version=1.23.3' > dryrun.txt`
+`ssh root@k01 'kubeadm init --dry-run --cri-socket=/var/run/crio/crio.sock --control-plane-endpoint=k8ep.paw.blue --pod-network-cidr=192.168.0.0/16 --kubernetes-version=1.23.3' > dryrun.txt`
 
 Do it for real.
 
-`ssh root@k01 'kubeadm init --cri-socket=/var/run/crio/crio.sock --control-plane-endpoint=k8ep.paw.blue --pod-network-cidr=10.244.0.0/16 --kubernetes-version=1.23.3'`
+`ssh root@k01 'kubeadm init --cri-socket=/var/run/crio/crio.sock --control-plane-endpoint=k8ep.paw.blue --pod-network-cidr=192.168.0.0/16 --kubernetes-version=1.23.3'`
 
 If it's successful, you'll see something like this:
 
@@ -222,17 +222,37 @@ Presumably, you don't want to run your `kubectl` commands on the server all the 
 
 From your bastion host, install `kubectl` and then do the following with your own node IP to allow your local `kubectl` client to controller the cluster you just created:
 
-`mkdir -p $HOME/.kube`
+```sh
+mkdir -p $HOME/.kube &&\
+  scp root@k01:/etc/kubernetes/admin.conf $HOME/.kube/config &&\
+  chown $(id -u):$(id -g) $HOME/.kube/config
+```
 
-`scp root@k01:/etc/kubernetes/admin.conf $HOME/.kube/config`
+## Single Node Cluster (optional)
 
-`chown $(id -u):$(id -g) $HOME/.kube/config`
+In a cluster with only one node, you'll need to run this to allow pods to run on the master:
+
+`kubectl taint nodes --all node-role.kubernetes.io/master-`
+
+## Install Pod Network
+
+`kubectl create -f https://docs.projectcalico.org/manifests/tigera-operator.yaml`
+
+`kubectl create -f https://docs.projectcalico.org/manifests/custom-resources.yaml`
 
 ## Verify Installation
 
 Make sure everything started.
 
 `kubectl get all -A`
+
+If Calico is hanging, you might see some things at 0/1 ready when you run:
+
+`kubectl get all -n calico-system`
+
+You may need to do this on the hosts to fix it:
+
+`systemctl restart crio`
 
 ## License
 
