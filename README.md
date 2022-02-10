@@ -1,6 +1,6 @@
 # k8s-cluster
 
-Deployment instructions for creating a Kubernetes cluster using Kubic
+Deployment instructions for creating a Kubernetes cluster using Rocky Linux 8. See other branches for other OSes.
 
 ## Architecture
 
@@ -9,31 +9,187 @@ This will expand as I make the cluster bigger and better:
 - The entire cluster will be just **one** node right now
 - IP: 10.1.20.81
 - Hostname: k01
-- OS: openSUSE Kubic
+- OS: Rocky Linux 8
 
-I previously built a cluster with three nodes where two of the nodes were LXC containers and one node was a physical host with Rocky Linux 8 [here](https://github.com/willquill/kube-plex).
+I previously built a cluster with three nodes where two of the nodes were LXC containers and one node was a physical host with Rocky Linux 8 [here](https://github.com/willquill/kube-lxc).
 
 Note: Since I'll probably have more nodes in the future and don't want to rewrite this README, I'll use terms like "all of the nodes" when, obviously, there is only one node right now.
 
-## Install Kubic
+## Install OS
 
-Nothing much to say here. I downloaded the Kubic ISO and installed it onto the destination machines.
+Nothing much to say here. I downloaded the Rocky Linux ISO and installed it onto the destination machines. I just use a 128 GB USB flash drive with a bunch of different ISOs on it and use [Ventoy](https://www.ventoy.net/en/index.html) to choose an ISO from a menu on destination machines.
 
-## Create Kubernetes Cluster
+## Prepare Bastion Host
 
-If you did not install Docker and want to use CRI-O, then do:
+Presumably, you're going to run your `kubectl` commands from a machine not in the cluster. That's your bastion host. In my case, it's an openSUSE Tumbleweed machine using the Alacritty terminal.
 
-`kubeadm init --pod-network-cidr=10.244.0.0/16`
+### Prepare SSH Keys and Config
 
-If you installed Docker but want to use CRI-O, then do:
+First, you'll want to prepare your SSH keys.
 
-`kubeadm init --pod-network-cidr=10.244.0.0/16 --cri-socket=/var/run/crio/crio.sock`
+I didn't want to use the default key names of `id_rsa` and `id_rsa.pub` so I ran the following command:
 
-^ *This is the method I used because I installed Docker on the host for other purposes.*
+`ssh-keygen -t rsa -b 4096 -N '' -f ~/.ssh/k8s_rsa`
 
-If you installed Docker and want to use dockershim, then do:
+Since every one of my kubernetes nodes will have a hostname that starts with `k0`, I'm making the SSH config apply to only the `k0*` hosts.
 
-`kubeadm init --pod-network-cidr=10.244.0.0/16 --cri-socket=/var/run/dockershim.sock`
+```sh
+cat >> ~/.ssh/config<< EOF
+Host k0*
+    UserKnownHostsFile /dev/null
+    StrictHostKeyChecking no
+    IdentitiesOnly yes
+    ConnectTimeout 0
+    ServerAliveInterval 30
+    IdentityFile ~/.ssh/k8s_rsa
+EOF
+```
+
+Set up the destination for remote authentication. In my case, I'm using the `nova` user on host `k01`.
+
+`ssh-copy-id -i ~/.ssh/k8s_rsa.pub nova@k01`
+
+May as well do root too, just in case:
+
+`ssh-copy-id -i ~/.ssh/k8s_rsa.pub root@k01`
+
+### Install your terminfo (optional)
+
+Since I'll be SSHing from Alacritty, I'll need the Alacritty terminfo on all machines.
+
+*If you do not install the terminfo, you may sometimes see messages like this:*
+
+```sh
+E558: Terminal entry not found in terminfo
+'alacritty' not known. Available builtin terminals are:
+    builtin_amiga
+    builtin_beos-ansi
+    builtin_ansi
+    builtin_pcansi
+    builtin_win32
+    builtin_vt320
+    builtin_vt52
+    builtin_xterm
+    builtin_iris-ansi
+    builtin_debug
+    builtin_dumb
+defaulting to 'ansi'
+```
+
+First, download the Alacritty repo locally.
+
+`git clone https://github.com/alacritty/alacritty.git`
+
+`cd alacritty`
+
+Now copy `extra/alacritty.info` to remote machines.
+
+`scp extra/alacritty.info nova@k01:/home/nova`
+
+And install the term info on remote machines.
+
+`ssh nova@k01 'sudo tic -xe alacritty,alacritty-direct alacritty.info'`
+
+The next few commands will be run on your destination hosts, where the commands differ based on linux distribution.
+
+### Prepare hosts file
+
+My two hosts:
+
+Host Purpose  |     IP     |       FQDN      | hostname
+--------------|------------|-----------------|---------
+Bastion       | 10.1.20.40 | lizard.paw.blue | lizard
+K8s Node 01   | 10.1.20.81 | k01.paw.blue    | k01.paw.blue
+
+So I want to update the /etc/hosts file on my bastion machine like this:
+
+```sh
+sudo tee -a /etc/hosts > /dev/null <<EOT
+10.1.20.40 lizard.paw.blue lizard
+10.1.20.81 k01.paw.blue k01
+
+# K8s Endpoints
+10.1.20.81 k8ep.paw.blue k8ep
+EOT
+```
+
+Notice that I use `tee` to append because I need root privileges.
+
+### Install Python 3.9
+
+I used [this](https://computingforgeeks.com/install-kubernetes-cluster-on-rocky-linux-with-kubeadm-crio/) guide.
+
+I won't reiterate all the steps from that guide, but here are some of them, as there were some occasional deviations. For some of the steps, I included instructions for both openSUSE and Rocky Linux bastion hosts.
+
+openSUSE only: `sudo zypper in python39`
+
+Rocky Linux only: `sudo dnf -y install python39`
+
+Both OSes:
+
+`sudo pip3 install setuptools-rust wheel`
+
+`sudo pip3 install --upgrade pip`
+
+### Install Ansible
+
+`sudo python3.9 -m pip install ansible`
+
+`ansible --version`
+
+You should see something like this in openSUSE:
+
+```sh
+ansible [core 2.12.1]
+  config file = None
+  configured module search path = ['/home/will/.ansible/plugins/modules', '/usr/share/ansible/plugins/modules']
+  ansible python module location = /usr/local/lib/python3.9/site-packages/ansible
+  ansible collection location = /home/will/.ansible/collections:/usr/share/ansible/collections
+  executable location = /usr/local/bin/ansible
+  python version = 3.9.9 (main, Nov 17 2021, 09:50:59) [GCC]
+  jinja version = 3.0.3
+  libyaml = True
+```
+
+You should see something like this in Rocky Linux:
+
+```sh
+ansible [core 2.12.1]
+  config file = None
+  configured module search path = ['/home/nova/.ansible/plugins/modules', '/usr/share/ansible/plugins/modules']
+  ansible python module location = /usr/local/lib/python3.9/site-packages/ansible
+  ansible collection location = /home/nova/.ansible/collections:/usr/share/ansible/collections
+  executable location = /usr/local/bin/ansible
+  python version = 3.9.6 (default, Nov  9 2021, 13:31:27) [GCC 8.5.0 20210514 (Red Hat 8.5.0-3)]
+  jinja version = 3.0.3
+  libyaml = True
+```
+
+## Install Kubernetes
+
+The `k8s-prep.yml` Ansible playbook will do a lot, including installing kubelet, kubeadm, and kubectl.
+
+`ansible-playbook -i hosts -l k8snodes k8s-prep.yml --ask-become-pass`
+
+## Mount NFS
+
+`ansible-playbook -i hosts -l k8sworkers mount-nfs.yml --ask-become-pass`
+
+## Create the cluster
+
+From my bastion host, I'm running a remote SSH command on my node. I couldn't figure out how to do this as my regular user, so I'm doing it as root.
+
+Remember to do this first if you didn't do it earlier:
+
+`ssh-copy-id -i ~/.ssh/k8s_rsa.pub root@k01`
+
+Do a dry run and then look at your `dryrun.txt` file.
+
+`ssh root@k01 'kubeadm init --dry-run --cri-socket=/var/run/crio/crio.sock --control-plane-endpoint=k8ep.paw.blue --pod-network-cidr=10.244.0.0/16 --kubernetes-version=1.23.3' > dryrun.txt`
+
+Do it for real.
+
+`ssh root@k01 'kubeadm init --cri-socket=/var/run/crio/crio.sock --control-plane-endpoint=k8ep.paw.blue --pod-network-cidr=10.244.0.0/16 --kubernetes-version=1.23.3'`
 
 If it's successful, you'll see something like this:
 
@@ -56,8 +212,8 @@ Run "kubectl apply -f [podnetwork].yaml" with one of the options listed at:
 
 Then you can join any number of worker nodes by running the following on each as root:
 
-kubeadm join 10.1.20.81:6443 --token 8lxrg1.t3ly4eoijwejfcfu \
-	--discovery-token-ca-cert-hash sha256:cf6fe4e63b971ff8869233c8265e432fb2319eef3c87ec64006c73e21a0962b6
+kubeadm join 10.1.20.81:6443 --token <redacted> \
+  --discovery-token-ca-cert-hash sha256:<redacted>
 ```
 
 ## Setup Bastion Host
@@ -68,76 +224,15 @@ From your bastion host, install `kubectl` and then do the following with your ow
 
 `mkdir -p $HOME/.kube`
 
-`scp root@10.1.20.81:/etc/kubernetes/admin.conf $HOME/.kube/config`
+`scp root@k01:/etc/kubernetes/admin.conf $HOME/.kube/config`
 
 `chown $(id -u):$(id -g) $HOME/.kube/config`
 
-## Setup Network Plugin
+## Verify Installation
 
-Weave is the recommended CNI, so install it with this:
+Make sure everything started.
 
-`kubectl apply -f /usr/share/k8s-yaml/weave/weave.yaml`
-
-Note: openSUSE used to recommend Flannel as the CNI, but now they recommend Weave. If you accidentally installed Flannel at any point, you can undo with the following:
-
-`kubectl delete -f /usr/share/k8s-yaml/flannel/kube-flannel.yaml`
-
-## Installing Packages in Kubic
-
-A note about `transactional-update`:
-
-- You can install a package like docker with `transactional-update pkg install docker`, but the changes will not take place until you reboot.
-
-## Install Rancher (optional)
-
-Personally, Rancher is not working at all for me. The output of `docker logs rancher 2>&1` shows `[FATAL] k3s exited with: exit status 1` at the end of the log. There are many GitHub issues about this with no fix, so I'm forgetting about Rancher for now. But I already wrote all these instructions below, so maybe they'll work for you.
-
-For now, just skip to the next section, [Create Kubernetes Cluster](#create-kubernetes-cluster).
-
-### Simple Rancher Install
-
-Follow the [Installing Packages](#installing-packages) section to install docker (remember to reboot) and then run:
-
-`docker run -d --name=rancher --restart=unless-stopped -p 80:80 -p 443:443 --privileged rancher/rancher`
-
-### SSL Rancher Install
-
-Or do it the fancy way if you want trusted certificates. In my case, I have a private CA on my OPNsense box, so I created a server certificate in OPNsense named `rancher.paw.blue` and downloaded the server cert, server key, and the full chain as `rancher.paw.blue.crt`, `rancher.paw.blue.key`, and `rancher.paw.blue.p12`, respectively.
-
-Then on my local machine, I converted the three files as follows:
-
-`mv rancher.paw.blue.crt ranchercert.pem` (only needs an extension change)
-
-`openssl rsa -in rancher.paw.blue.key -text > rancherkey.pem`
-
-`openssl pkcs12 -clcerts -in rancher.paw.blue.p12 -out ranchercacerts.pem -nokeys`
-
-You are left with `ranchercert.pem`, `rancherkey.pem`, and `ranchercacerts.pem`
-
-Then I copied them all to the Kubic node using `zsh` shell as follows:
-
-`\scp rancher*.pem root@10.1.20.81:/root`
-
-Verify on my Kubic node:
-
-```text
-k01:~ # ls -l *.pem
--rw------- 1 root root  2769 Feb  4 03:21 ranchercacerts.pem
--rw-r--r-- 1 root root  2427 Feb  4 03:21 ranchercert.pem
--rw-r--r-- 1 root root 11107 Feb  4 03:21 rancherkey.pem
-```
-
-Then run this to install Rancher via Docker:
-
-```docker
-docker run -d --name=rancher --restart=unless-stopped \
-  -p 80:80 -p 443:443 \
-  -v /root/ranchercert.pem:/etc/rancher/ssl/cert.pem \
-  -v /root/rancherkey.pem:/etc/rancher/ssl/key.pem \
-  -v /root/ranchercacerts.pem:/etc/rancher/ssl/cacerts.pem \
-  --privileged \
-  rancher/rancher:latest
-```
+`kubectl get all -A`
 
 ## License
 
@@ -146,4 +241,4 @@ Distributed under the MIT License. See LICENSE for more information.
 ## Credit
 
 - [Official documentation for Kubic](https://en.opensuse.org/Kubic:kubeadm)
-- [This blog entry](https://blog.sdmoko.net/create-k8s-cluster-with-kubic.html) helped me
+- [This blog entry by Josphat Mutai](https://blog.sdmoko.net/create-k8s-cluster-with-kubic.html)
