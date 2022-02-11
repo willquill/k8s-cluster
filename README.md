@@ -254,6 +254,98 @@ You may need to do this on the hosts to fix it:
 
 `systemctl restart crio`
 
+## Install Helm (optional)
+
+I use Helm for a few things, and I didn't have Helm yet on my openSUSE Tumbleweed bastion host, so I did this to install it and get completion working in both bash and ZSH:
+
+`sudo zypper in helm helm-bash-completion helm-zsh-completion helmfile helmfile-bash-completion helmfile-zsh-completion`
+
+## Install Ingress Controller
+
+### NGINX Ingress Controller
+
+See [here](https://kubernetes.github.io/ingress-nginx/deploy/) for documentation.
+
+Install with the following command:
+
+```sh
+helm upgrade --install ingress-nginx ingress-nginx \
+  --repo https://kubernetes.github.io/ingress-nginx \
+  --namespace ingress-nginx --create-namespace
+```
+
+### Use IPVS kube-proxy
+
+I recommend reading [this doc](https://projectcalico.docs.tigera.io/networking/use-ipvs) to determine if you want to use IPVS instead of iptables.
+
+See guide [here](https://metallb.universe.tf/installation/) for how to enable IPVS kube-proxy.
+
+### Install MetalLB
+
+Installing MetalLB is actually really easy:
+
+`kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/v0.11.0/manifests/namespace.yaml`
+
+`kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/v0.11.0/manifests/metallb.yaml`
+
+Install the configmap:
+
+`kubectl apply -f manifests/metallb/configmap.yaml`
+
+My configmap looks like this:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  namespace: metallb-system
+  name: config
+data:
+  config: |
+    address-pools:
+    - name: default
+      protocol: layer2
+      addresses:
+      - 10.1.20.210-10.1.20.254
+```
+
+The address range is the available address pool from which load balancer services in the cluster will get their IP addresses.
+
+Since my core network uses the `10.1.20.0/24` IP address space, and my DHCP server assigns IPs in the `10.1.20.100-199` range, and because I have static IPs assigned from `1-99` and `200-209`, I'm dedicating `210-254` to be available for cluster load balancers. This means I can deploy 45 load balancers before I've maxed out my address pool.
+
+You can read more about this feature [here](https://blog.inkubate.io/install-and-configure-metallb-as-a-load-balancer-for-kubernetes/), as well as in the official documentation.
+
+### Test MetalLB
+
+The following command will deploy a simple nginx web server with a load balancer service.
+
+`kubectl apply test-nginx.yaml`
+
+You can also apply this other test:
+
+`kubectl apply test-web.yaml`
+
+See your services:
+
+`kubectl get svc -A`
+
+You should see external IPs for your LoadBalancer services, and you should be able to access these from your web browser now!
+
+Here's a sample of what mine look like:
+
+```sh
+NAMESPACE          NAME                                 TYPE           CLUSTER-IP       EXTERNAL-IP   PORT(S)                      AGE
+calico-apiserver   calico-api                           ClusterIP      10.105.97.131    <none>        443/TCP                      23h
+calico-system      calico-kube-controllers-metrics      ClusterIP      10.96.176.42     <none>        9094/TCP                     23h
+calico-system      calico-typha                         ClusterIP      10.103.178.250   <none>        5473/TCP                     23h
+default            kubernetes                           ClusterIP      10.96.0.1        <none>        443/TCP                      23h
+default            nginx-service                        LoadBalancer   10.98.200.72     10.1.20.211   80:31803/TCP                 6s
+ingress-nginx      ingress-nginx-controller             LoadBalancer   10.98.234.83     10.1.20.210   80:31609/TCP,443:32697/TCP   53m
+ingress-nginx      ingress-nginx-controller-admission   ClusterIP      10.99.133.230    <none>        443/TCP                      53m
+kube-system        kube-dns                             ClusterIP      10.96.0.10       <none>        53/UDP,53/TCP,9153/TCP       23h
+web                web-server-service                   LoadBalancer   10.108.229.201   10.1.20.212   80:30567/TCP                 3s
+```
+
 ## License
 
 Distributed under the MIT License. See LICENSE for more information.
