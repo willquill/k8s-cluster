@@ -99,7 +99,7 @@ My two hosts:
 Host Purpose  |     IP     |       FQDN      | hostname
 --------------|------------|-----------------|---------
 Bastion       | 10.1.20.40 | lizard.paw.blue | lizard
-K8s Node 01   | 10.1.20.81 | k01.paw.blue    | k01.paw.blue
+K8s Node 01   | 10.1.20.81 | k01.paw.blue    | k01
 
 So I want to update the /etc/hosts file on my bastion machine like this:
 
