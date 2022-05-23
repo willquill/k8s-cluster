@@ -346,6 +346,137 @@ kube-system        kube-dns                             ClusterIP      10.96.0.1
 web                web-server-service                   LoadBalancer   10.108.229.201   10.1.20.212   80:30567/TCP                 3s
 ```
 
+### Secrets
+
+For passwords and the like, I'm using a Rocky Linux 8 [Linode](https://www.linode.com/) instance as a secrets vault using Hashicorp Vault which I deployed via [these instructions](https://www.linode.com/docs/guides/use-hashicorp-vault-for-secret-management/).
+
+I had to deploy the node, install certbot, acquire a TLS certificate, download Vault files, install Vault, configure Vault
+
+#### Linode Preparation
+
+```sh
+sudo dnf install epel-release &&\
+  sudo dnf update &&\
+  sudo dnf install certbot python3-certbot-nginx nginx -y &&\
+  sudo firewall-cmd --zone=public --add-port=80/tcp &&\
+  sudo firewall-cmd --zone=public --add-port=443/tcp &&\
+  sudo firewall-cmd --reload
+```
+
+Double check what you just did for firewall-d:
+
+`firewall-cmd --permanent --zone=public --list-ports`
+
+You should see `443/tcp 80/tcp` as output.
+
+Create the cert:
+
+`sudo certbot --nginx`
+
+You can renew all existing certificates that will expire in under 30 days with the following command:
+
+`certbot renew`
+
+Proceed with TLC Certificate:
+
+`sudo groupadd tls`
+
+```sh
+sudo chgrp -R tls /etc/letsencrypt/{archive,live} &&\
+  sudo chmod g+rx /etc/letsencrypt/{archive,live} &&\
+  sudo find /etc/letsencrypt/archive -name 'privkey*' -exec chmod g+r {} ';'
+```
+
+Proceed with vault:
+
+```sh
+sudo dnf install unzip -y &&\
+curl -O https://releases.hashicorp.com/vault/1.9.3/vault_1.9.3_linux_amd64.zip &&\
+  unzip vault_*_linux_amd64.zip &&\
+  sudo mv vault /usr/local/bin &&\
+  sudo chown root:root /usr/local/bin/vault &&\
+  sudo chmod 755 /usr/local/bin/vault &&\
+  sudo setcap cap_ipc_lock=+ep /usr/local/bin/vault &&\
+  vault --version
+```
+
+Sample output: `Vault v1.9.3 (7dbdd57243a0d8d9d9e07cd01eb657369f8e1b8a)`
+
+```sh
+sudo useradd --system -d /etc/vault.d -s /bin/nologin vault &&\
+  sudo gpasswd -a vault tls &&\
+  sudo install -o vault -g vault -m 750 -d /var/lib/vault &&\
+  sudo install -o vault -g vault -m 750 -d /etc/vault.d
+```
+
+```sh
+sudo tee -a /etc/systemd/system/vault.service > /dev/null <<EOT
+[Unit]
+Description="a tool for managing secrets"
+Documentation=https://www.vaultproject.io/docs/
+Requires=network-online.target
+After=network-online.target
+ConditionFileNotEmpty=/etc/vault.d/vault.hcl
+
+[Service]
+User=vault
+Group=vault
+ProtectSystem=full
+ProtectHome=read-only
+PrivateTmp=yes
+PrivateDevices=yes
+SecureBits=keep-caps
+AmbientCapabilities=CAP_IPC_LOCK
+Capabilities=CAP_IPC_LOCK+ep
+CapabilityBoundingSet=CAP_SYSLOG CAP_IPC_LOCK
+NoNewPrivileges=yes
+ExecStart=/usr/local/bin/vault server -config=/etc/vault.d/vault.hcl
+ExecReload=/bin/kill --signal HUP $MAINPID
+KillMode=process
+KillSignal=SIGINT
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+StartLimitIntervalSec=60
+StartLimitBurst=3
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+EOT
+```
+
+```sh
+fqdn=your.fqdn.here
+sudo tee -a /etc/vault.d/vault.hcl > /dev/null <<EOT
+listener "tcp" {
+  address = "0.0.0.0:8200"
+  tls_cert_file = "/etc/letsencrypt/live/$fqdn/fullchain.pem"
+  tls_key_file = "/etc/letsencrypt/live/$fqdn/privkey.pem"
+}
+
+storage "file" {
+  path = "/var/lib/vault"
+}
+EOT
+```
+
+`sudo systemctl start vault`
+
+`sudo systemctl enable vault`
+
+Confirm that Vault is operational by using the vault executable to check for the service’s status. Set the VAULT_ADDR environment variable to https://example.com:8200, replacing example.com with your own domain:
+
+`export VAULT_ADDR=$fqdn` (you set the fqdn variable a few steps ago)
+
+Feb 12 04:30:19 45-56-127-165.ip.linodeusercontent.com systemd[9223]: vault.service: Failed to execute command: Perm>
+Feb 12 04:30:19 45-56-127-165.ip.linodeusercontent.com systemd[9223]: vault.service: Failed at step EXEC spawning /u>
+-- Subject: Process /usr/local/bin/vault could not be executed
+-- Defined-By: systemd
+-- Support: https://access.redhat.com/support
+--
+-- The process /usr/local/bin/vault could not be executed and failed.
+
 ## License
 
 Distributed under the MIT License. See LICENSE for more information.
