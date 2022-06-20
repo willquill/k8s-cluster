@@ -6,8 +6,17 @@
 
 - name: Install supported version of docker
   ansible.builtin.package:
-    name: [docker-ce]
+    name:
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
     state: present
+
+- name: Add the user to the docker group
+  user:
+    name: "{{ docker_user }}"
+    groups: docker
+    append: yes
 
 - name: Create other directories required
   ansible.builtin.file:

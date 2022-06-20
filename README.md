@@ -346,6 +346,47 @@ kube-system        kube-dns                             ClusterIP      10.96.0.1
 web                web-server-service                   LoadBalancer   10.108.229.201   10.1.20.212   80:30567/TCP                 3s
 ```
 
+## Docker Only
+
+If you only want your node(s) to install Docker and nothing else, follow this.
+
+### Populate hosts file
+
+Populate the `hosts` file with the nodes where you want docker only. My only host is `tucana`, so I added this:
+
+```conf
+[dockernodes]
+tucana ansible_connection=ssh ansible_user=nova
+```
+
+Because the `docker-only.yml` file specifies `dockernodes`, you can exclude hosts from the ansible-playbook command.
+
+### Populate local SSH config
+
+Make sure you specify the identify file you want to use
+
+```sh
+cat >> ~/.ssh/config<< EOF
+Host tucana
+    UserKnownHostsFile /dev/null
+    StrictHostKeyChecking no
+    IdentitiesOnly yes
+    ConnectTimeout 0
+    ServerAliveInterval 30
+    IdentityFile ~/.ssh/id_rsa
+EOF
+```
+
+### Set up SSH authentication
+
+Set up the destination for remote authentication. In my case, I'm using the `nova` user on host `tucana`.
+
+`ssh-copy-id -i ~/.ssh/id_rsa.pub nova@tucana`
+
+### Execute playbook
+
+`ansible-playbook -i hosts -l dockernodes docker-only.yml --ask-become-pass`
+
 ## License
 
 Distributed under the MIT License. See LICENSE for more information.
